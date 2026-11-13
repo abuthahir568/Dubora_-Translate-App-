@@ -83,6 +83,14 @@ class LocalLibraryRepository(
         }
     }
 
+    suspend fun clearSegmentsForLanguage(movieId: String, targetLangCode: String) {
+        dao.deleteSegmentsForMovieAndLang(movieId, targetLangCode)
+        val langDir = File(appContext.filesDir, "dub_audio/$movieId/$targetLangCode")
+        if (langDir.exists()) {
+            langDir.deleteRecursively()
+        }
+    }
+
     suspend fun clearDownloadedDub(movie: LocalMovie) {
         dao.deleteSegmentsForMovie(movie.id)
         dao.updateDubCacheStatus(

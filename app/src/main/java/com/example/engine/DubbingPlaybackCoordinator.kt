@@ -60,6 +60,9 @@ class DubbingPlaybackCoordinator(
     private var exoPlayer: ExoPlayer? = null
     private var dubMediaPlayer: MediaPlayer? = null
     private var lastPlayedSegmentId: String? = null
+    private val playedSegmentIds = mutableSetOf<String>()
+    private var pausedMidDub: Boolean = false
+    private var lastSyncPosMs: Long = -1L
     private var pipelineJob: Job? = null
     private var syncJob: Job? = null
     private val knownSpeakers = mutableMapOf<String, String>()
@@ -115,8 +118,9 @@ class DubbingPlaybackCoordinator(
     }
 
     suspend fun loadCachedSegmentsForMovie(movie: LocalMovie, targetLangCode: String) {
-        val cached = localRepo.getCachedSegments(movie.id, targetLangCode)
+        val cached = sanitizeAndDeoverlapSegments(localRepo.getCachedSegments(movie.id, targetLangCode))
         coveredRanges.clear()
+        playedSegmentIds.clear()
         val maxEnd = cached.maxOfOrNull { it.endMs } ?: 0L
         _state.value = _state.value.copy(
             segments = cached,
@@ -136,10 +140,15 @@ class DubbingPlaybackCoordinator(
         if (pipelineJob?.isActive == true && _state.value.stage != DubbingPipelineStage.ERROR) {
             return
         }
-        startLiveDubbing(movie, currentConfig, forceRestart = true)
+        startLiveDubbing(movie, currentConfig, forceRestart = true, clearPreviousCache = false)
     }
 
-    fun startLiveDubbing(movie: LocalMovie, config: DubbingConfig, forceRestart: Boolean = false) {
+    fun startLiveDubbing(
+        movie: LocalMovie,
+        config: DubbingConfig,
+        forceRestart: Boolean = false,
+        clearPreviousCache: Boolean = false
+    ) {
         if (!forceRestart &&
             pipelineJob?.isActive == true &&
             currentMovie?.id == movie.id &&
@@ -157,7 +166,10 @@ class DubbingPlaybackCoordinator(
         syncJob?.cancel()
         stopDubbedPlayback()
         lastPlayedSegmentId = null
-        if (!isSameTargetPipeline) {
+        playedSegmentIds.clear()
+        pausedMidDub = false
+        lastSyncPosMs = -1L
+        if (!isSameTargetPipeline || clearPreviousCache) {
             coveredRanges.clear()
             knownSpeakers.clear()
             _state.value = _state.value.copy(
@@ -224,31 +236,57 @@ class DubbingPlaybackCoordinator(
             statusDetail = "Preparing fast AI dubbing stream..."
         )
 
-        // Start sync loop tracking ExoPlayer clock (supports seeking anywhere in 3-hour movies)
+        // Start sync loop tracking ExoPlayer clock (supports seeking, pause/resume, and smooth cue chaining)
         syncJob = scope.launch {
             while (isActive) {
                 val player = exoPlayer
                 val posMs = player?.currentPosition ?: 0L
                 val isPlaying = player?.isPlaying == true
                 val st = _state.value
+
+                // Detect scrubbing / seeking (forward jump > 2.5s or rewind > 400ms)
+                val userSeeked = lastSyncPosMs >= 0L && (posMs < lastSyncPosMs - 400L || posMs > lastSyncPosMs + 2_500L)
+                lastSyncPosMs = posMs
+                if (userSeeked) {
+                    stopDubbedPlayback()
+                    pausedMidDub = false
+                    lastPlayedSegmentId = null
+                    playedSegmentIds.clear()
+                    if (_state.value.isSpeakingNow) {
+                        _state.value = _state.value.copy(isSpeakingNow = false)
+                        applyMixState(
+                            mode = _state.value.activeTrackMode,
+                            isDubSpeaking = false,
+                            preserveBackgroundMusic = currentConfig.preserveBackgroundMusic,
+                            reduceOriginalDialogue = currentConfig.reduceOriginalDialogue,
+                            duckLevel = currentConfig.originalDialogueDuckLevel
+                        )
+                    }
+                }
+
                 val active = findActiveSegment(st.segments, posMs)
 
                 if (st.activeTrackMode == AudioTrackMode.AI_DUBBED) {
                     val buffering = st.isDubbingActive &&
                         isPlaying &&
                         !isPositionCovered(posMs, st.segments) &&
-                        movie.durationMs > posMs + 1500L
+                        resolveMovieDurationMs(movie) > posMs + 1500L
 
-                    if (active != null && isPlaying && active.id != lastPlayedSegmentId) {
-                        val audioPath = active.synthesizedAudioPath
-                        if (!audioPath.isNullOrBlank() && File(audioPath).exists()) {
-                            lastPlayedSegmentId = active.id
-                            _state.value = _state.value.copy(
-                                currentSegment = active,
-                                isSpeakingNow = true,
-                                activeSpeakerLabel = active.speakerLabel,
-                                isBufferingDub = false
-                            )
+                    if (!isPlaying) {
+                        if (st.isSpeakingNow && !pausedMidDub) {
+                            pauseDubbedPlayback()
+                            pausedMidDub = true
+                        }
+                        _state.value = _state.value.copy(
+                            currentSegment = active,
+                            activeSpeakerLabel = active?.speakerLabel,
+                            isBufferingDub = false
+                        )
+                    } else {
+                        // Resuming mid-sentence after video pause
+                        if (pausedMidDub && st.isSpeakingNow) {
+                            resumeDubbedPlayback()
+                            pausedMidDub = false
                             applyMixState(
                                 mode = AudioTrackMode.AI_DUBBED,
                                 isDubSpeaking = true,
@@ -256,38 +294,71 @@ class DubbingPlaybackCoordinator(
                                 reduceOriginalDialogue = currentConfig.reduceOriginalDialogue,
                                 duckLevel = currentConfig.originalDialogueDuckLevel
                             )
-                            playDubbedFile(
-                                filePath = audioPath,
-                                volume = originalMasterVolume,
-                                speed = currentConfig.voiceSpeed
-                            ) {
-                                _state.value = _state.value.copy(isSpeakingNow = false)
+                        }
+
+                        // Only start next dubbed cue when previous dubbed cue has finished (zero mid-word chop)
+                        val nextCue = if (!st.isSpeakingNow) {
+                            findNextUnplayedCue(st.segments, posMs, playedSegmentIds)
+                        } else {
+                            null
+                        }
+
+                        if (nextCue != null) {
+                            val audioPath = nextCue.synthesizedAudioPath
+                            playedSegmentIds.add(nextCue.id)
+                            lastPlayedSegmentId = nextCue.id
+                            if (!audioPath.isNullOrBlank() && File(audioPath).exists()) {
+                                val videoPlaybackRate = player?.playbackParameters?.speed ?: 1.0f
+                                _state.value = _state.value.copy(
+                                    currentSegment = active ?: nextCue,
+                                    isSpeakingNow = true,
+                                    activeSpeakerLabel = nextCue.speakerLabel,
+                                    isBufferingDub = false
+                                )
                                 applyMixState(
-                                    mode = _state.value.activeTrackMode,
-                                    isDubSpeaking = false,
+                                    mode = AudioTrackMode.AI_DUBBED,
+                                    isDubSpeaking = true,
                                     preserveBackgroundMusic = currentConfig.preserveBackgroundMusic,
                                     reduceOriginalDialogue = currentConfig.reduceOriginalDialogue,
                                     duckLevel = currentConfig.originalDialogueDuckLevel
                                 )
+                                playDubbedFile(
+                                    filePath = audioPath,
+                                    volume = originalMasterVolume,
+                                    speed = videoPlaybackRate
+                                ) {
+                                    pausedMidDub = false
+                                    _state.value = _state.value.copy(isSpeakingNow = false)
+                                    applyMixState(
+                                        mode = _state.value.activeTrackMode,
+                                        isDubSpeaking = false,
+                                        preserveBackgroundMusic = currentConfig.preserveBackgroundMusic,
+                                        reduceOriginalDialogue = currentConfig.reduceOriginalDialogue,
+                                        duckLevel = currentConfig.originalDialogueDuckLevel
+                                    )
+                                }
+                            } else {
+                                _state.value = _state.value.copy(
+                                    currentSegment = active ?: nextCue,
+                                    activeSpeakerLabel = nextCue.speakerLabel,
+                                    isBufferingDub = buffering
+                                )
                             }
-                        } else {
+                        } else if (!st.isSpeakingNow) {
                             _state.value = _state.value.copy(
                                 currentSegment = active,
-                                activeSpeakerLabel = active.speakerLabel,
+                                activeSpeakerLabel = active?.speakerLabel,
                                 isBufferingDub = buffering
                             )
+                        } else {
+                            _state.value = _state.value.copy(
+                                currentSegment = active ?: _state.value.currentSegment,
+                                activeSpeakerLabel = (active ?: _state.value.currentSegment)?.speakerLabel
+                            )
                         }
-                    } else if (active == null && !st.isSpeakingNow) {
-                        _state.value = _state.value.copy(
-                            currentSegment = null,
-                            activeSpeakerLabel = null,
-                            isBufferingDub = buffering
-                        )
-                    } else if (!isPlaying) {
-                        pauseDubbedPlayback()
                     }
                 }
-                delay(160L)
+                delay(140L)
             }
         }
 
@@ -295,13 +366,26 @@ class DubbingPlaybackCoordinator(
         pipelineJob = scope.launch {
             try {
                 val uri = Uri.parse(movie.uriString)
-                val cached = localRepo.getCachedSegments(movie.id, config.targetLangCode)
-                if (cached.isNotEmpty()) {
-                    _state.value = _state.value.copy(
-                        segments = cached,
-                        processedUntilMs = cached.maxOf { it.endMs },
-                        detectedSpeakersCount = cached.map { it.speakerId }.distinct().size
+                if (clearPreviousCache) {
+                    localRepo.clearSegmentsForLanguage(movie.id, config.targetLangCode)
+                } else {
+                    val cached = sanitizeAndDeoverlapSegments(
+                        localRepo.getCachedSegments(movie.id, config.targetLangCode)
                     )
+                    if (cached.isNotEmpty()) {
+                        _state.value = _state.value.copy(
+                            segments = cached,
+                            processedUntilMs = cached.maxOf { it.endMs },
+                            detectedSpeakersCount = cached.map { it.speakerId }.distinct().size
+                        )
+                    }
+                }
+
+                // Wait briefly for ExoPlayer metadata if movie duration wasn't resolved during import
+                var waitChecks = 0
+                while (movie.durationMs <= 0L && (exoPlayer?.duration ?: 0L) <= 0L && waitChecks < 10 && isActive) {
+                    delay(150L)
+                    waitChecks++
                 }
 
                 val steadyChunkMs = config.lookaheadBufferSeconds.coerceIn(12, 30) * 1000L
@@ -398,13 +482,18 @@ class DubbingPlaybackCoordinator(
                         config = config,
                         knownSpeakers = knownSpeakers,
                         onRetry = { progress ->
+                            val statusText = if (!isImmediatePlayhead && _state.value.segments.isNotEmpty()) {
+                                "Buffering next scene (${progress.attempt}/${progress.maxRetries})..."
+                            } else {
+                                progress.userStatusMessage
+                            }
                             _state.value = _state.value.copy(
                                 stage = DubbingPipelineStage.RETRYING,
                                 isRetrying = true,
                                 retryAttempt = progress.attempt,
                                 maxRetries = progress.maxRetries,
                                 activeModelId = progress.modelId,
-                                statusDetail = progress.userStatusMessage
+                                statusDetail = statusText
                             )
                         }
                     )
@@ -481,9 +570,10 @@ class DubbingPlaybackCoordinator(
 
                     recordCoveredRange(nextStart, windowEnd)
 
-                    val merged = (_state.value.segments + synthesizedList)
-                        .distinctBy { it.id }
-                        .sortedBy { it.startMs }
+                    val retainedExisting = _state.value.segments.filterNot { seg ->
+                        seg.startMs >= nextStart && seg.startMs < windowEnd
+                    }
+                    val merged = sanitizeAndDeoverlapSegments(retainedExisting + synthesizedList)
 
                     _state.value = _state.value.copy(
                         segments = merged,
@@ -493,9 +583,9 @@ class DubbingPlaybackCoordinator(
                         statusDetail = "Ready (${merged.size} dubbed cues • ${formatMs(windowEnd)} buffered)"
                     )
 
-                    // Gentle RPM pacing when we are already comfortably ahead of playhead
-                    if (!isImmediatePlayhead && windowEnd < totalDurationMs) {
-                        delay(1_100L)
+                    // Pace back-to-back chunk requests to prevent per-minute / concurrency 429 bursts
+                    if (windowEnd < totalDurationMs) {
+                        delay(if (isImmediatePlayhead) 1_600L else 2_000L)
                     }
                 }
             } catch (e: CancellationException) {
@@ -656,6 +746,27 @@ class DubbingPlaybackCoordinator(
         return null
     }
 
+    private fun findNextUnplayedCue(
+        segments: List<DubSegment>,
+        positionMs: Long,
+        playedIds: Set<String>
+    ): DubSegment? {
+        if (segments.isEmpty()) return null
+        val exact = findActiveSegment(segments, positionMs)
+        if (exact != null && exact.id !in playedIds) {
+            return exact
+        }
+        // Catch up cleanly to a cue that started just behind playhead (within 1.5s) while previous cue finished
+        return segments.firstOrNull { seg ->
+            seg.id !in playedIds &&
+                seg.startMs <= positionMs + 150L &&
+                seg.endMs >= positionMs - 1_500L
+        }
+    }
+
+    private fun sanitizeAndDeoverlapSegments(raw: List<DubSegment>): List<DubSegment> =
+        sanitizeSegments(raw)
+
     override fun isBufferReadyAt(
         segments: List<DubSegment>,
         processedUntilMs: Long,
@@ -772,7 +883,44 @@ class DubbingPlaybackCoordinator(
         voiceEngine.shutdown()
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "DubbingCoordinator"
+
+        internal fun sanitizeSegments(raw: List<DubSegment>): List<DubSegment> {
+            if (raw.isEmpty()) return emptyList()
+            val sorted = raw
+                .distinctBy { it.id }
+                .sortedWith(compareBy<DubSegment> { it.startMs }.thenBy { it.endMs })
+            val out = mutableListOf<DubSegment>()
+            for (seg in sorted) {
+                val prev = out.lastOrNull()
+                if (prev == null) {
+                    out.add(seg)
+                    continue
+                }
+                if (seg.startMs < prev.endMs) {
+                    val overlapMs = minOf(prev.endMs, seg.endMs) - maxOf(prev.startMs, seg.startMs)
+                    val segLen = (seg.endMs - seg.startMs).coerceAtLeast(1L)
+                    val prevLen = (prev.endMs - prev.startMs).coerceAtLeast(1L)
+                    val isDuplicateTurn = kotlin.math.abs(seg.startMs - prev.startMs) <= 850L ||
+                        overlapMs > (minOf(segLen, prevLen) * 0.45f)
+                    if (isDuplicateTurn) {
+                        val prevHasAudio = !prev.synthesizedAudioPath.isNullOrBlank()
+                        val segHasAudio = !seg.synthesizedAudioPath.isNullOrBlank()
+                        if (!prevHasAudio && segHasAudio) {
+                            out[out.lastIndex] = seg
+                        }
+                    } else {
+                        val trimmedStart = prev.endMs + 40L
+                        if (seg.endMs > trimmedStart + 350L) {
+                            out.add(seg.copy(startMs = trimmedStart))
+                        }
+                    }
+                } else {
+                    out.add(seg)
+                }
+            }
+            return out
+        }
     }
 }

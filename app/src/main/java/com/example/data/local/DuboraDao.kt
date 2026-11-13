@@ -41,6 +41,9 @@ interface DuboraDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSegments(segments: List<DubSegmentEntity>)
 
+    @Query("DELETE FROM dub_segments WHERE movieId = :movieId AND targetLangCode = :targetLangCode")
+    suspend fun deleteSegmentsForMovieAndLang(movieId: String, targetLangCode: String)
+
     @Query("DELETE FROM dub_segments WHERE movieId = :movieId")
     suspend fun deleteSegmentsForMovie(movieId: String)
 

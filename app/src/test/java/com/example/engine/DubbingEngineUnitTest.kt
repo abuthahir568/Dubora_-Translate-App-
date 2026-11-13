@@ -1,5 +1,6 @@
 package com.example.engine
 
+import com.example.domain.model.DubSegment
 import com.example.domain.model.DubbingConfig
 import com.example.domain.model.TranslationQuality
 import com.google.firebase.ai.type.Schema
@@ -368,5 +369,74 @@ class DubbingEngineUnitTest {
         assertTrue(result.isSuccess)
         assertTrue(result.getOrThrow().isEmpty())
         assertEquals(0, calls)
+    }
+
+    @Test
+    fun parseAudioDubSegments_normalizesOverlappingTurnBoundariesAndDeterministicIds() = runTest {
+        val fakeInvoker = object : GeminiModelInvoker {
+            override suspend fun generateAudioDubJson(
+                modelId: String,
+                wavBytes: ByteArray,
+                prompt: String,
+                responseSchema: Schema
+            ): String = """
+                {
+                  "detectedSourceLanguage": "en",
+                  "segments": [
+                    {
+                      "startOffsetMs": 0,
+                      "endOffsetMs": 2500,
+                      "speakerHint": "Speaker_1",
+                      "speakerGender": "male",
+                      "originalText": "Do you have any experience?",
+                      "translatedText": "உங்களுக்கு ஏதாவது அனுபவம் இருக்கா?"
+                    },
+                    {
+                      "startOffsetMs": 1800,
+                      "endOffsetMs": 6000,
+                      "speakerHint": "Speaker_2",
+                      "speakerGender": "male",
+                      "originalText": "No sir, I am a big fan of money.",
+                      "translatedText": "இல்லை ஐயா, எனக்கு பணத்தை பிடிக்கும்."
+                    }
+                  ]
+                }
+            """.trimIndent()
+
+            override suspend fun generateTextDubJson(
+                modelId: String,
+                prompt: String,
+                responseSchema: Schema
+            ): String = ""
+        }
+
+        val engine = GeminiDubbingEngine(modelInvoker = fakeInvoker)
+        val result = engine.recognizeDiarizeAndTranslateChunk(
+            chunk = AudioChunk("mov1", 0L, 14_000L, 16000, 1, ByteArray(32)),
+            config = DubbingConfig(sourceLangCode = "en", targetLangCode = "ta"),
+            knownSpeakers = mutableMapOf()
+        )
+
+        assertTrue(result.isSuccess)
+        val segs = result.getOrThrow()
+        assertEquals(2, segs.size)
+        assertEquals(0L, segs[0].startMs)
+        assertEquals(2500L, segs[0].endMs)
+        assertTrue("Second turn must not overlap first", segs[1].startMs >= segs[0].endMs)
+        assertEquals("mov1_ta_0_2500", segs[0].id)
+    }
+
+    @Test
+    fun sanitizeSegments_removesOverlappingOldCacheRunsWhilePreservingShortSequentialTurns() {
+        val mixed = listOf(
+            DubSegment("old_1", "m", "ta", 0L, 700L, "SPK_1", "Speaker 1", "male", "Hey", "ஏய்", "/a.wav"),
+            DubSegment("short_2", "m", "ta", 750L, 2000L, "SPK_2", "Speaker 2", "male", "What?", "என்ன?", "/b.wav"),
+            DubSegment("dup_2", "m", "ta", 900L, 2100L, "SPK_2", "Speaker 2", "male", "What?", "என்ன ஐயா?", null)
+        )
+
+        val cleaned = DubbingPlaybackCoordinator.sanitizeSegments(mixed)
+        assertEquals(2, cleaned.size)
+        assertEquals("old_1", cleaned[0].id)
+        assertEquals("short_2", cleaned[1].id)
     }
 }

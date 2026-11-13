@@ -187,7 +187,12 @@ fun DuboraAuthenticatedShell(
             runtimeState = runtimeState,
             onAttachPlayer = viewModel::attachPlayer,
             onUpdateConfig = viewModel::updateConfig,
-            onStartDubbing = { viewModel.startLiveDubbingForActiveMovie(forceRestart = true) },
+            onStartDubbing = {
+                viewModel.startLiveDubbingForActiveMovie(
+                    forceRestart = true,
+                    clearPreviousCache = true
+                )
+            },
             onRetryDubbing = viewModel::retryLiveDubbing,
             onSwitchToFastStream = viewModel::switchToFastStreamAndRetry,
             onStopDubbing = viewModel::stopLiveDubbing,

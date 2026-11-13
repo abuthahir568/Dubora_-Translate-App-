@@ -97,14 +97,14 @@ class AndroidTtsVoiceEngine(private val context: Context) : VoiceGenerationEngin
                 VoiceStyle.DRAMATIC -> 0.94f
                 VoiceStyle.DOCUMENTARY -> 0.96f
             }
-            val estimatedBaseMs = (text.length.coerceAtLeast(1) * 68L)
+            val estimatedBaseMs = (text.length.coerceAtLeast(1) * 75L)
             val durationFitBoost = if (targetMaxDurationMs in 700L..15_000L && estimatedBaseMs > targetMaxDurationMs) {
-                (estimatedBaseMs.toFloat() / targetMaxDurationMs.toFloat()).coerceIn(1.0f, 1.32f)
+                (estimatedBaseMs.toFloat() / targetMaxDurationMs.toFloat()).coerceIn(1.0f, 1.28f)
             } else {
                 1.0f
             }
             val finalPitch = (voicePitch + speakerPitchOffset).coerceIn(0.65f, 1.45f)
-            val finalRate = (voiceSpeed * styleSpeedMultiplier * durationFitBoost).coerceIn(0.65f, 1.65f)
+            val finalRate = (voiceSpeed * styleSpeedMultiplier * durationFitBoost).coerceIn(0.65f, 1.55f)
 
             engine.setPitch(finalPitch)
             engine.setSpeechRate(finalRate)

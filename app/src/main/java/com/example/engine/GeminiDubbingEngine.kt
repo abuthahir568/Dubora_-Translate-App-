@@ -246,8 +246,9 @@ class GeminiDubbingEngine(
                 append("Source: ${sourceSpec.displayName} (${sourceSpec.code}). ")
             }
             append("Target: ${targetSpec.displayName} (${targetSpec.code}), style: ${config.voiceStyle.label}. ")
-            append("Return JSON segments with startOffsetMs/endOffsetMs (0..$clipDurationMs), consistent speakerHint (Speaker_1..), ")
-            append("speakerGender, verbatim originalText, and concise timing-matched translatedText in ${targetSpec.displayName}. ")
+            append("Split speech into short non-overlapping sentence turns (2000-5000ms each, startOffsetMs >= previous endOffsetMs, 0..$clipDurationMs). ")
+            append("Return JSON segments with consistent speakerHint (Speaker_1..), speakerGender, verbatim originalText, ")
+            append("and concise natural translatedText in ${targetSpec.displayName} (1-2 short sentences max per segment). ")
             append("Return empty segments if music/SFX/silence only.")
         }
 
@@ -350,13 +351,26 @@ class GeminiDubbingEngine(
             }
         }
 
-        val diarized = assignConsistentSpeakers(utterances.map { it.first }, knownSpeakers)
+        // Enforce strictly monotonic, non-overlapping segment boundaries so audio & subtitles never collide
+        val sortedPairs = utterances.sortedBy { it.first.startOffsetMs }
+        val normalizedPairs = mutableListOf<Pair<RecognizedUtterance, String>>()
+        var prevEndOff = 0L
+        for ((utt, trans) in sortedPairs) {
+            val safeStart = maxOf(utt.startOffsetMs, prevEndOff).coerceAtMost(clipDurationMs)
+            val safeEnd = maxOf(utt.endOffsetMs, safeStart + 650L).coerceAtMost(clipDurationMs + 1500L)
+            if (safeEnd > safeStart + 250L) {
+                normalizedPairs.add(utt.copy(startOffsetMs = safeStart, endOffsetMs = safeEnd) to trans)
+                prevEndOff = safeEnd + 40L
+            }
+        }
+
+        val diarized = assignConsistentSpeakers(normalizedPairs.map { it.first }, knownSpeakers)
         return diarized.mapIndexed { idx, d ->
-            val trans = utterances[idx].second
+            val trans = normalizedPairs[idx].second
             val absStart = chunk.windowStartMs + d.utterance.startOffsetMs
             val absEnd = chunk.windowStartMs + d.utterance.endOffsetMs
             DubSegment(
-                id = "${chunk.movieId}_${config.targetLangCode}_${absStart}_${UUID.randomUUID().toString().take(6)}",
+                id = "${chunk.movieId}_${config.targetLangCode}_${absStart}_$absEnd",
                 movieId = chunk.movieId,
                 targetLangCode = config.targetLangCode,
                 startMs = absStart,

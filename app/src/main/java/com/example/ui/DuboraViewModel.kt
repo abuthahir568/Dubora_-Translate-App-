@@ -250,10 +250,18 @@ class DuboraViewModel(
         coordinator.attachPlayer(player)
     }
 
-    fun startLiveDubbingForActiveMovie(forceRestart: Boolean = true) {
+    fun startLiveDubbingForActiveMovie(
+        forceRestart: Boolean = true,
+        clearPreviousCache: Boolean = false
+    ) {
         val movie = _activeMovie.value ?: return
         val cfg = config.value
-        coordinator.startLiveDubbing(movie, cfg, forceRestart = forceRestart)
+        coordinator.startLiveDubbing(
+            movie = movie,
+            config = cfg,
+            forceRestart = forceRestart,
+            clearPreviousCache = clearPreviousCache
+        )
         viewModelScope.launch {
             cloudRepo.upsertDubbingSession(
                 sessionId = "${movie.id}_${cfg.targetLangCode}",

@@ -208,7 +208,6 @@ fun MoviePlayerScreen(
 
     val activeSubtitleSegment = remember(runtimeState.segments, currentPosMs) {
         runtimeState.segments.firstOrNull { currentPosMs in it.startMs..it.endMs }
-            ?: runtimeState.currentSegment
     }
 
     Box(
@@ -271,23 +270,27 @@ fun MoviePlayerScreen(
                 Surface(
                     color = ObsidianBlack.copy(alpha = config.subtitleBgOpacity),
                     shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, CharcoalBorder.copy(alpha = 0.5f))
+                    border = BorderStroke(1.dp, CharcoalBorder.copy(alpha = 0.5f)),
+                    modifier = Modifier.widthIn(max = 520.dp)
                 ) {
                     Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
                             text = activeSubtitleSegment.speakerLabel,
                             style = MaterialTheme.typography.labelSmall,
-                            color = LuminousIris
+                            color = LuminousIris,
+                            maxLines = 1
                         )
                         if (config.subtitleMode == SubtitleMode.ORIGINAL || config.subtitleMode == SubtitleMode.DUAL) {
                             Text(
                                 text = activeSubtitleSegment.originalText,
                                 fontSize = (config.subtitleFontSizeSp - 2f).coerceAtLeast(11f).sp,
                                 color = InkSecondary,
-                                textAlign = TextAlign.Center
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         if (config.subtitleMode == SubtitleMode.AI_TRANSLATED || config.subtitleMode == SubtitleMode.DUAL) {
@@ -295,7 +298,9 @@ fun MoviePlayerScreen(
                                 text = activeSubtitleSegment.translatedText,
                                 fontSize = config.subtitleFontSizeSp.sp,
                                 color = InkPrimary,
-                                textAlign = TextAlign.Center
+                                textAlign = TextAlign.Center,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -318,29 +323,33 @@ fun MoviePlayerScreen(
                 else -> runtimeState.stage.label
             }
             Surface(
-                color = ObsidianBlack.copy(alpha = 0.88f),
-                shape = CircleShape,
+                color = ObsidianBlack.copy(alpha = 0.90f),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, pillBorderColor),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .safeDrawingPadding()
-                    .padding(top = 62.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 62.dp)
+                    .widthIn(max = 480.dp)
                     .testTag("player_dubbing_loading_pill")
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
+                        modifier = Modifier.size(16.dp),
                         color = if (runtimeState.isRetrying || runtimeState.isBufferingDub) AmberBuffer else CyanPulse,
                         strokeWidth = 2.dp
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = pillText,
                         style = MaterialTheme.typography.labelMedium,
-                        color = InkPrimary
+                        color = InkPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                 }
             }
