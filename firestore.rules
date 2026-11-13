@@ -1,0 +1,139 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() <= 80 &&
+             data.email is string && data.email.size() <= 160 &&
+             data.defaultSourceLang is string && data.defaultSourceLang.size() >= 1 && data.defaultSourceLang.size() <= 20 &&
+             data.defaultTargetLang is string && data.defaultTargetLang.size() >= 1 && data.defaultTargetLang.size() <= 20 &&
+             data.defaultVoiceGender in ['natural_male', 'natural_female', 'speaker_matched'] &&
+             data.autoDubbing is bool &&
+             data.wifiOnlyProcessing is bool;
+    }
+
+    function isValidDubbingSession(data) {
+      return data.userId is string && data.userId == request.auth.uid && data.userId.size() <= 128 &&
+             data.movieTitle is string && data.movieTitle.size() >= 1 && data.movieTitle.size() <= 180 &&
+             data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 220 &&
+             data.fileSizeBytes is int && data.fileSizeBytes >= 0 &&
+             data.durationMs is int && data.durationMs >= 0 &&
+             data.lastPositionMs is int && data.lastPositionMs >= 0 &&
+             data.sourceLang is string && data.sourceLang.size() >= 1 && data.sourceLang.size() <= 20 &&
+             data.targetLang is string && data.targetLang.size() >= 1 && data.targetLang.size() <= 20 &&
+             data.voiceProfile is string && data.voiceProfile.size() >= 1 && data.voiceProfile.size() <= 40 &&
+             data.segmentsProcessed is int && data.segmentsProcessed >= 0 &&
+             data.status in ['active', 'paused', 'completed', 'downloaded'];
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'email',
+                         'defaultSourceLang', 'defaultTargetLang', 'defaultVoiceGender',
+                         'autoDubbing', 'wifiOnlyProcessing', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email',
+                         'defaultSourceLang', 'defaultTargetLang', 'defaultVoiceGender',
+                         'autoDubbing', 'wifiOnlyProcessing', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().createdAt is timestamp &&
+                       incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp &&
+                       incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'email',
+                         'defaultSourceLang', 'defaultTargetLang', 'defaultVoiceGender',
+                         'autoDubbing', 'wifiOnlyProcessing', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      match /dubbing_sessions/{sessionId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(sessionId) && request.auth.uid == userId;
+        allow list: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(sessionId) &&
+                         request.auth.uid == userId &&
+                         incoming().keys().hasAll([
+                           'userId', 'movieTitle', 'fileName',
+                           'fileSizeBytes', 'durationMs', 'lastPositionMs',
+                           'sourceLang', 'targetLang', 'voiceProfile',
+                           'segmentsProcessed', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().keys().hasOnly([
+                           'userId', 'movieTitle', 'fileName',
+                           'fileSizeBytes', 'durationMs', 'lastPositionMs',
+                           'sourceLang', 'targetLang', 'voiceProfile',
+                           'segmentsProcessed', 'status', 'createdAt', 'updatedAt'
+                         ]) &&
+                         incoming().createdAt is timestamp &&
+                         incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp &&
+                         incoming().updatedAt <= request.time &&
+                         isValidDubbingSession(incoming());
+
+        allow update: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(sessionId) &&
+                         request.auth.uid == userId &&
+                         isValidDubbingSession(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().fileName == existing().fileName &&
+                         incoming().fileSizeBytes == existing().fileSizeBytes &&
+                         incoming().durationMs == existing().durationMs &&
+                         incoming().sourceLang == existing().sourceLang &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp &&
+                         incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'movieTitle', 'lastPositionMs', 'targetLang',
+                           'voiceProfile', 'segmentsProcessed', 'status', 'updatedAt'
+                         ]);
+
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(sessionId) && request.auth.uid == userId;
+      }
+    }
+  }
+}

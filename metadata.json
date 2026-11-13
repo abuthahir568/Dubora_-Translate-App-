@@ -1,0 +1,6 @@
+{
+  "name": "Dubora AI",
+  "description": "AI multi-language movie dubbing player with real-time Gemini speech translation, speaker-aware voice synthesis, dual subtitles, and local media playback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

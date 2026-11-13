@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user profile and synced dubbing preferences.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name."
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address."
+        },
+        "defaultSourceLang": {
+          "type": "string",
+          "description": "Default source dialogue language code (or auto)."
+        },
+        "defaultTargetLang": {
+          "type": "string",
+          "description": "Default target dubbing language code."
+        },
+        "defaultVoiceGender": {
+          "type": "string",
+          "enum": ["natural_male", "natural_female", "speaker_matched"],
+          "description": "Preferred AI voice assignment mode."
+        },
+        "autoDubbing": {
+          "type": "boolean",
+          "description": "Whether AI dubbing starts automatically on playback."
+        },
+        "wifiOnlyProcessing": {
+          "type": "boolean",
+          "description": "Restrict cloud AI dubbing processing to Wi-Fi."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on write."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "email",
+        "defaultSourceLang",
+        "defaultTargetLang",
+        "defaultVoiceGender",
+        "autoDubbing",
+        "wifiOnlyProcessing",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DubbingSessionRecord": {
+      "title": "DubbingSessionRecord",
+      "description": "Metadata and usage history for an AI movie dubbing session (no movie video files stored in cloud).",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID."
+        },
+        "movieTitle": {
+          "type": "string",
+          "description": "Display title of the movie."
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Local file name."
+        },
+        "fileSizeBytes": {
+          "type": "integer",
+          "description": "Local file size in bytes."
+        },
+        "durationMs": {
+          "type": "integer",
+          "description": "Movie duration in milliseconds."
+        },
+        "lastPositionMs": {
+          "type": "integer",
+          "description": "Last playback position in milliseconds."
+        },
+        "sourceLang": {
+          "type": "string",
+          "description": "Original movie dialogue language code."
+        },
+        "targetLang": {
+          "type": "string",
+          "description": "Target AI dubbing language code."
+        },
+        "voiceProfile": {
+          "type": "string",
+          "description": "Selected AI voice profile."
+        },
+        "segmentsProcessed": {
+          "type": "integer",
+          "description": "Count of dialogue segments translated and synthesized."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "paused", "completed", "downloaded"],
+          "description": "Session lifecycle status."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set via FieldValue.serverTimestamp() on write."
+        }
+      },
+      "required": [
+        "userId",
+        "movieTitle",
+        "fileName",
+        "fileSizeBytes",
+        "durationMs",
+        "lastPositionMs",
+        "sourceLang",
+        "targetLang",
+        "voiceProfile",
+        "segmentsProcessed",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Owner-isolated user profile and preferences document."
+    },
+    "/users/{userId}/dubbing_sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/DubbingSessionRecord"
+      },
+      "description": "Owner-isolated AI dubbing session history and progress."
+    }
+  }
+}
